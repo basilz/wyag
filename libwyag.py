@@ -463,5 +463,5 @@ class GitCommit(GitObject):
     def serialize(self, data):
         self.kvlm = kvlm_parse(data)
 
-    def deserialize(self):
+    def deserialize(self, data):
         return kvlm_serialize(self.kvlm)
