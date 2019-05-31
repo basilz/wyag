@@ -60,6 +60,36 @@ argsp.add_argument("path", help="Read object from <file>")
 argsp = argsubparsers.add_parser("log", help="Display history of a given commit.")
 argsp.add_argument("commit", default="HEAD", nargs="?", help="Commit to start at.")
 
+argsp = argsubparsers.add_parser("ls-tree", help="Pretty-print a tree object.")
+argsp.add_argument("object", help="The object to show.")
+
+
+argsp = argsubparsers.add_parser(
+    "checkout", help="Checkout a commit inside of a directory."
+)
+
+argsp.add_argument("commit", help="The commit or tree to checkout.")
+
+argsp.add_argument("path", help="The EMPTY directory to checkout on.")
+
+
+def cmd_ls_tree(args):
+    repo = repo_find()
+    obj = object_read(repo, object_find(repo, args.object, fmt=b"tree"))
+
+    for item in obj.items:
+        print(
+            "{0} {1} {2}\t{3}".format(
+                "0" * (6 - len(item.mode)) + item.mode.decode("ascii"),
+                # Git's ls-tree displays the type
+                # of the object pointed to.  We can do that too :)
+                object_read(repo, item.sha).fmt.decode("ascii"),
+                item.sha,
+                item.path.decode("ascii"),
+            )
+        )
+
+
 # ███████ ██    ██ ███    ██  ██████ ████████ ██  ██████  ███    ██ ███████
 # ██      ██    ██ ████   ██ ██         ██    ██ ██    ██ ████   ██ ██
 # █████   ██    ██ ██ ██  ██ ██         ██    ██ ██    ██ ██ ██  ██ ███████
@@ -373,11 +403,81 @@ def log_graphviz(repo, sha, seen):
         print("c_{0} -> c_{1};".format(sha, p))
         log_graphviz(repo, p, seen)
 
-    #  ██████  ██ ████████ ██████  ███████ ██████   ██████  ███████ ██ ████████  ██████  ██████  ██    ██
-    # ██       ██    ██    ██   ██ ██      ██   ██ ██    ██ ██      ██    ██    ██    ██ ██   ██  ██  ██
-    # ██   ███ ██    ██    ██████  █████   ██████  ██    ██ ███████ ██    ██    ██    ██ ██████    ████
-    # ██    ██ ██    ██    ██   ██ ██      ██      ██    ██      ██ ██    ██    ██    ██ ██   ██    ██
-    #  ██████  ██    ██    ██   ██ ███████ ██       ██████  ███████ ██    ██     ██████  ██   ██    ██
+
+def tree_parse_one(raw, start=0):
+    x = raw.find(b" ", start)
+    assert x - start == 5 or x - start == 6
+
+    mode = raw[start:x]
+
+    y = raw.find(b"\x00", x)
+    path = raw[x + 1 : y]
+
+    sha = hex(int.from_bytes(raw[y + 1 : y + 21], "big"))[2:]
+
+    return y + 21, GitTreeLeaf(mode, path, sha)
+
+
+def tree_parse(raw):
+    pos = 0
+    max = len(raw)
+    ret = list()
+    while pos < max:
+        pos, data = tree_parse_one(raw, pos)
+        ret.append(data)
+
+    return ret
+
+
+def tree_serialize(obj):
+    ret = b""
+    for i in obj.items:
+        ret += i.mode
+        ret += b" "
+        ret += i.path
+        ret += b"\x00"
+        sha = int(i.sha, 16)
+        ret += sha.to_bytes(20, byteorder="big")
+
+    return ret
+
+
+def cmd_checkout(args):
+    repo = repo_find()
+
+    obj = object_read(repo, object_find(repo, args.commit))
+
+    if obj.fmt == b"commit":
+        obj = object_read(repo, obj.kvlm[b"tree"]).decode("ascii")
+
+    if os.path.exists(args.path):
+        if not os.path.isdir(args.path):
+            raise Exception("Not a directory {0}!".format(args.path))
+        if os.listdir(args.path):
+            raise Exception("Not empty {0}!".format(args.path))
+    else:
+        os.makedirs(args.path)
+
+    tree_checkout(repo, obj, os.path.realpath(args.path).encode())
+
+
+def tree_checkout(repo, tree, path):
+    for item in tree.items:
+        obj = object_read(repo, item.sha)
+        dest = os.path.join(path, item.path)
+
+        if obj.fmt == b"tree":
+            os.mkdir(dest)
+            tree_checkout(repo, obj, dest)
+        elif obj.fmt == b"blob":
+            with open(dest, "wb") as f:
+                f.write(obj.blobdata)
+
+    #  ██████ ██       █████  ███████ ███████ ███████ ███████
+    # ██      ██      ██   ██ ██      ██      ██      ██
+    # ██      ██      ███████ ███████ ███████ █████   ███████
+    # ██      ██      ██   ██      ██      ██ ██           ██
+    #  ██████ ███████ ██   ██ ███████ ███████ ███████ ███████
 
 
 class GitRepository(object):
@@ -407,12 +507,6 @@ class GitRepository(object):
             if vers != 0:
                 raise Exception("Unsupported repositoryformatversion {}".format(vers))
 
-        #  ██████  ██ ████████  ██████  ██████       ██ ███████  ██████ ████████
-        # ██       ██    ██    ██    ██ ██   ██      ██ ██      ██         ██
-        # ██   ███ ██    ██    ██    ██ ██████       ██ █████   ██         ██
-        # ██    ██ ██    ██    ██    ██ ██   ██ ██   ██ ██      ██         ██
-        #  ██████  ██    ██     ██████  ██████   █████  ███████  ██████    ██
-
 
 class GitObject(object):
 
@@ -434,12 +528,6 @@ class GitObject(object):
     def deserialize(self, data):
         raise Exception("Not implemented!")
 
-        #  ██████  ██ ████████ ██████  ██       ██████  ██████
-        # ██       ██    ██    ██   ██ ██      ██    ██ ██   ██
-        # ██   ███ ██    ██    ██████  ██      ██    ██ ██████
-        # ██    ██ ██    ██    ██   ██ ██      ██    ██ ██   ██
-        #  ██████  ██    ██    ██████  ███████  ██████  ██████
-
 
 class GitBlob(GitObject):
     fmt = b"blob"
@@ -450,12 +538,6 @@ class GitBlob(GitObject):
     def deserialize(self, data):
         self.blobdata = data
 
-        #  ██████  ██ ████████  ██████  ██████  ███    ███ ███    ███ ██ ████████
-        # ██       ██    ██    ██      ██    ██ ████  ████ ████  ████ ██    ██
-        # ██   ███ ██    ██    ██      ██    ██ ██ ████ ██ ██ ████ ██ ██    ██
-        # ██    ██ ██    ██    ██      ██    ██ ██  ██  ██ ██  ██  ██ ██    ██
-        #  ██████  ██    ██     ██████  ██████  ██      ██ ██      ██ ██    ██
-
 
 class GitCommit(GitObject):
     fmt = b"commit"
@@ -465,3 +547,20 @@ class GitCommit(GitObject):
 
     def deserialize(self, data):
         return kvlm_serialize(self.kvlm)
+
+
+class GitTreeLeaf(object):
+    def __init__(self, mode, path, sha):
+        self.mode = mode
+        self.path = path
+        self.sha = sha
+
+
+class GitTree(GitObject):
+    fmt = b"tree"
+
+    def deserialize(self, data):
+        self.items = tree_parse(data)
+
+    def serialize(self):
+        return tree_serialize(self)
