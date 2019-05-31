@@ -423,7 +423,7 @@ class GitObject(object):
         if data != None:
             self.deserialize(data)
 
-    def deserialize(self):
+    def serialize(self):
         """This function MUST be implemented by subclasses.
 
         It must read the object's contents from self.data, a byte string, and do
